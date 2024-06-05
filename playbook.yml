@@ -1,0 +1,532 @@
+---
+- name: "Configure host"
+  hosts: localhost
+  connection: local
+  become: true
+
+  # ansible-galaxy collection install NAME
+  collections:
+  - community.general
+  - community.mysql
+  - ansible.posix
+  # - devsec.hardening
+
+  module_defaults:
+    community.mysql.mysql_db:
+      login_unix_socket: "{{ db_unix_socket }}"
+      login_user: "{{ db_user }}"
+      login_password: "{{ db_pass }}"
+    community.mysql.mysql_info:
+      login_unix_socket: "{{ db_unix_socket }}"
+      login_db: mysql
+      login_user: "{{ db_user }}"
+      login_password: "{{ db_pass }}"
+    community.mysql.mysql_query:
+      login_unix_socket: "{{ db_unix_socket }}"
+      login_db: mysql
+      login_user: "{{ db_user }}"
+      login_password: "{{ db_pass }}"
+    community.mysql.mysql_user:
+      login_unix_socket: "{{ db_unix_socket }}"
+      login_user: "{{ db_user }}"
+      login_password: "{{ db_pass }}"
+
+  vars:
+    debug: true
+    hostname: server.local
+    root_password: CHANGE_ME
+    users:
+    - student
+    group: users
+    document_root: /var/www/html
+    phpinfo_url: http://localhost/info.php
+    wp_cli_bin: /usr/local/bin/wp
+    wp_cli_completion: /etc/profile.d/wp-cli.sh
+    wp_cli_url: https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar
+    wp_cli_bash_url: https://github.com/wp-cli/wp-cli/raw/main/utils/wp-completion.bash
+    wp_url: "http://{{ hostname }}"
+    wp_title: "WordPress"
+    wp_theme: "twentyseventeen"
+    wp_admin_user: admin
+    wp_admin_pass: CHANGE_ME
+    wp_admin_mail: "wordpress@{{ hostname }}"
+    wp_db_host: localhost
+    wp_db_name: wordpress
+    wp_db_user: wordpress
+    wp_db_pass: CHANGE_ME
+    db_user: root
+    db_pass: CHANGE_ME
+    db_host: localhost
+    db_port: 3306
+    db_unix_socket: /var/lib/mysql/mysql.sock
+    db_auth_plugin: mysql_native_password
+
+  # roles:
+  # - name: devsec.hardening.mysql_hardening
+  #   # scm: git
+  #   # src: https://github.com/dev-sec/ansible-collection-hardening/tree/master/roles/mysql_hardening
+  #   # version: master
+  #   vars:
+  #     mysql_daemon_enabled: true
+  #     mysql_hardening_enabled: true
+  #     mysql_hardening_restart_mysql: true
+  #     mysql_hardening_skip_grant_tables: false
+  #     mysql_remove_anonymous_users: true
+  #     mysql_remove_remote_root: false
+  #     mysql_remove_test_database: true
+  #     mysql_root_password: "{{ db_pass }}"
+
+  tasks:
+
+  - name: Configure system
+    tags:
+    - system
+    block:
+
+    - name: Set a hostname
+      ansible.builtin.hostname:
+        name: "{{ hostname }}"
+        use: systemd
+
+    - name: Set timezone
+      community.general.timezone:
+        name: America/New_York
+
+    # - name: Set keyboard layout
+
+    # - name: Set locale
+    #   community.general.locale_gen:
+    #     name: en_US.UTF-8
+    #     state: present
+
+  - name: Configure users
+    tags:
+    - users
+    block:
+
+    - name: Set root password
+      ansible.builtin.user:
+        name: root
+        comment: root
+        # password: "{{ root_password | password_hash('sha512') }}"
+        password: "$6$CHANGE_ME$CHANGE_ME"
+        password_lock: false
+        update_password: always
+
+    - name: Create users
+      ansible.builtin.user:
+        name: "{{ item }}"
+        comment: "{{ item }}"
+        group: "{{ group }}"
+        groups: "{{ group }},wheel"
+        append: yes
+        shell: /bin/bash
+        system: false
+        state: present
+        # password: "{{ item | password_hash('sha512')  }}"
+        password: "$6$CHANGE_ME$CHANGE_ME"
+        expires: -1
+        password_lock: false
+        update_password: always
+        home: "/home/{{ item }}"
+        create_home: yes
+        generate_ssh_key: yes
+        ssh_key_comment: "{{ item }}@{{ hostname }}"
+        ssh_key_bits: 2048
+        ssh_key_file: .ssh/id_rsa
+      loop: "{{ users }}"
+
+    - name: Remove groups
+      ansible.builtin.group:
+        name: "{{ item }}"
+        state: absent
+      loop: "{{ users }}"
+
+    - name: Fix HOME permissions
+      ansible.builtin.shell:
+        cmd: "chown -cR {{ item }}:{{ group }} ~{{ item }}"
+      loop: "{{ users }}"
+
+  - name: Configure packages
+    tags:
+    - packages
+    block:
+
+    - name: Install packages
+      ansible.builtin.dnf:
+        state: present
+        name:
+        - open-vm-tools
+        - cloud-init
+        - avahi
+        - avahi-tools
+        - httpd
+        - php
+        - php-mysqlnd
+        - php-intl
+        - mariadb
+        - mariadb-server
+        - memcached
+        - redis
+        - epel-release
+
+    - name: Remove packages
+      ansible.builtin.dnf:
+        state: absent
+        name:
+        - plymouth
+        - gnome-initial-setup
+
+    - name: Update dnf cache
+      ansible.builtin.dnf:
+        update_cache: yes
+        cacheonly: no
+
+    - name: Install packages
+      ansible.builtin.dnf:
+        state: present
+        name:
+        - ansible
+        - nss-mdns
+        - wget
+        - curl
+        - beep
+        - links
+        - elinks
+        - python3-mysqlclient
+        - php-pecl-redis
+
+  - name: Configure services
+    tags:
+    - services
+    block:
+
+    - name: Enable services
+      ansible.builtin.service:
+        state: started
+        enabled: yes
+        name: "{{ item }}"
+      loop:
+      - cloud-config
+      - cloud-init-local
+      - cloud-init
+      - cloud-final
+      - rc-local
+      - avahi-daemon
+      - sshd
+      - httpd
+      - php-fpm
+      - mariadb
+      - memcached
+      - redis
+
+  - name: Configure SELinux
+    tags:
+    - selinux
+    block:
+
+    - name: Set SELinux policy
+      ansible.posix.selinux:
+        state: enforcing
+        policy: targeted
+
+    - name: Set SELinux booleans
+      ansible.posix.seboolean:
+        name: "{{ item.name }}"
+        state: "{{ item.state }}"
+        persistent: yes
+      loop:
+      - name: httpd_enable_cgi
+        state: on
+      - name: httpd_can_network_connect
+        state: off
+      - name: httpd_can_network_relay
+        state: off
+      - name: httpd_can_network_connect_db
+        state: on
+      - name: httpd_can_network_memcache
+        state: on
+      - name: mysql_connect_any
+        state: on
+      - name: mysql_connect_http
+        state: off
+      - name: selinuxuser_mysql_connect_enabled
+        state: on
+      - name: selinuxuser_ping
+        state: on
+      loop_control:
+        label: "{{ item.name }}"
+
+  - name: Configure FirewallD
+    block:
+
+    - name: Enable services
+      ansible.posix.firewalld:
+        zone: public
+        state: enabled
+        permanent: true
+        service: "{{ item }}"
+      loop:
+      - mdns
+      - ssh
+      - http
+      - https
+      - mysql
+      - memcache
+      - redis
+
+    - name: Reload FirewallD
+      ansible.builtin.command:
+        cmd: firewall-cmd --reload
+
+  - name: Configure database
+    tags:
+    - database
+    block:
+
+    - name: Check database info
+      community.mysql.mysql_info:
+      become: true
+
+    - name: Remove anonymous user accounts
+      community.mysql.mysql_user:
+        name: ''
+        host: localhost
+        state: absent
+
+    - name: Remove anonymous user accounts
+      community.mysql.mysql_user:
+        name: ''
+        host_all: true
+        state: absent
+
+    - name: Set database 'root' password
+      community.mysql.mysql_user:
+        name: "{{ db_user }}"
+        host: localhost
+        password: "{{ db_pass }}"
+        encrypted: false
+        plugin: "{{ db_auth_plugin }}"
+        state: present
+
+    - name: Create database user
+      block:
+
+      - name: Create database user
+        community.mysql.mysql_user:
+          name: "{{ item }}"
+          host: '%'
+          password: "{{ item }}"
+          encrypted: false
+          plugin: "{{ db_auth_plugin }}"
+          priv: "'{{ item }}.*:ALL'"
+          tls_requires: null
+          state: present
+        loop:
+        - "{{ wp_db_user }}"
+
+      rescue:
+
+      - name: Create database user
+        community.mysql.mysql_query:
+          query: "GRANT ALL PRIVILEGES ON {{ item }}.* TO '{{ item }}'@'%' IDENTIFIED BY '{{ item }}'"
+        loop:
+        - "{{ wp_db_user }}"
+
+    - name: Create database
+      community.mysql.mysql_db:
+        name: "{{ item }}"
+        encoding: utf8
+        collation: utf8_general_ci
+        state: present
+      loop:
+      - "{{ wp_db_name }}"
+
+    - name: FLUSH PRIVILEGES
+      community.mysql.mysql_query:
+        query: FLUSH PRIVILEGES
+
+  - name: Configure PHP
+    tags:
+    - php
+    block:
+
+    - name: Install 'info.php'
+      ansible.builtin.copy:
+        dest: "{{ document_root}}/info.php"
+        mode: '644'
+        owner: root
+        group: root
+        seuser: system_u
+        serole: object_r
+        setype: httpd_sys_content_t
+        selevel: s0
+        content: |
+          <?php phpinfo();
+
+    - name: Check 'info.php'
+      ansible.builtin.shell:
+        cmd: "elinks -dump {{ phpinfo_url }} | head -n 12 | tail -n 10"
+      register: output
+    - ansible.builtin.debug:
+        var: output.stdout_lines
+      when: debug
+
+  - name: Configure 'wp-cli'
+    tags:
+    - wp-cli
+    block:
+
+    - name: Install 'wp-cli'
+      ansible.builtin.get_url:
+        url: "{{ wp_cli_url }}"
+        dest: "{{ wp_cli_bin }}"
+        mode: '755'
+        owner: root
+        group: root
+        seuser: system_u
+        serole: object_r
+        setype: bin_t
+        selevel: s0
+
+    - name: Install 'wp-cli' bash completion
+      ansible.builtin.get_url:
+        url: "{{ wp_cli_bash_url }}"
+        dest: "{{ wp_cli_completion }}"
+        mode: '644'
+        owner: root
+        group: root
+        seuser: system_u
+        serole: object_r
+        setype: bin_t
+        selevel: s0
+
+    - name: Verify 'wp-cli'
+      ansible.builtin.command:
+        cmd: wp cli info
+      register: output
+    - ansible.builtin.debug:
+        var: output.stdout_lines
+      when: debug
+
+  - name: Configure WordPress
+    tags:
+    - wordpress
+    block:
+
+    - name: Download WordPress
+      ansible.builtin.command:
+        cmd: wp core download
+        chdir: "{{ document_root }}"
+        creates: "{{ document_root }}/index.php"
+
+    - name: Download WordPress
+      ansible.builtin.command:
+        chdir: "{{ document_root }}"
+        creates: "{{ document_root }}/wp-config.php"
+        argv:
+        - wp
+        - config
+        - create
+        - "--dbhost={{ wp_db_host }}"
+        - "--dbname={{ wp_db_name }}"
+        - "--dbuser={{ wp_db_user }}"
+        - "--dbpass={{ wp_db_pass }}"
+
+    # TODO: CREATE DATABASE IF NOT EXISTS
+    # - name: Create WordPress database
+    #   ansible.builtin.command:
+    #     chdir: "{{ document_root }}"
+    #     argv:
+    #     - wp
+    #     - db
+    #     - create
+    #     - "--dbuser={{ wp_db_user }}"
+    #     - "--dbpass={{ wp_db_pass }}"
+
+    - name: Install WordPress
+      ansible.builtin.command:
+        chdir: "{{ document_root }}"
+        argv:
+        - wp
+        - core
+        - install
+        - "--url={{ wp_url }}"
+        - "--title={{ wp_title }}"
+        - "--admin_user={{ wp_admin_user }}"
+        - "--admin_password={{ wp_admin_pass }}"
+        - "--admin_email={{ wp_admin_mail }}"
+        - --skip-email
+
+    - name: Check that WordPress is installed
+      ansible.builtin.command:
+        cmd: wp core is-installed
+        chdir: "{{ document_root }}"
+
+    - name: Check WordPress version
+      ansible.builtin.command:
+        cmd: wp core version
+        chdir: "{{ document_root }}"
+      register: output
+    - ansible.builtin.debug:
+        var: output.stdout_lines
+      when: debug
+
+    - name: Enable maintenance mode
+      ansible.builtin.command:
+        cmd: wp maintenance-mode activate
+        chdir: "{{ document_root }}"
+
+    - name: Update site variables
+      ansible.builtin.command:
+        cmd: "wp option update {{ item }} {{ wp_url }}"
+        chdir: "{{ document_root }}"
+      loop:
+      - home
+      - siteurl
+
+    - name: Install theme
+      ansible.builtin.command:
+        cmd: "wp theme install {{ wp_theme }} --activate"
+        chdir: "{{ document_root }}"
+
+    - name: Disable maintenance mode
+      ansible.builtin.command:
+        cmd: wp maintenance-mode deactivate
+        chdir: "{{ document_root }}"
+
+    - name: Check maintenance mode status
+      ansible.builtin.command:
+        cmd: wp maintenance-mode status
+        chdir: "{{ document_root }}"
+      register: output
+    - ansible.builtin.debug:
+        var: output.stdout_lines
+      when: debug
+
+    - name: Fix owner on DocumentRoot
+      ansible.builtin.file:
+        path: "{{ document_root }}"
+        state: directory
+        recurse: yes
+        owner: root
+        group: apache
+        mode: ug+rw,o+r,o-w
+
+    - name: Fix permissions on DocumentRoot
+      ansible.builtin.command:
+        cmd: "{{ item.cmd }}"
+      loop:
+      - name: dir
+        mode: 3775
+        cmd: "find {{ document_root }} -type d -exec chmod -c u+rwx,g+rwxs,o+xt,o-w {} +"
+      - name: file
+        mode: 0664
+        cmd: "find {{ document_root }} -type f -exec chmod -c ug+rw,o+r,o-w {} +"
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Fix SELinux context on DocumentRoot
+      ansible.builtin.command:
+        cmd: "restorecon -vR {{ document_root }}"
+...
