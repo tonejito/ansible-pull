@@ -1,0 +1,313 @@
+---
+- name: "Configure host"
+  hosts: localhost
+  connection: local
+  become: true
+
+  # ansible-galaxy collection install NAME
+  collections:
+  - community.general
+  - community.mysql
+  - ansible.posix
+  # - devsec.hardening
+
+  module_defaults:
+    community.mysql.mysql_db:
+      login_unix_socket: "{{ db_unix_socket }}"
+      login_user: "{{ db_user }}"
+      login_password: "{{ db_pass }}"
+    community.mysql.mysql_info:
+      login_unix_socket: "{{ db_unix_socket }}"
+      login_db: "{{ db_name }}"
+      login_user: "{{ db_user }}"
+      login_password: "{{ db_pass }}"
+    community.mysql.mysql_query:
+      login_unix_socket: "{{ db_unix_socket }}"
+      login_db: "{{ db_name }}"
+      login_user: "{{ db_user }}"
+      login_password: "{{ db_pass }}"
+    community.mysql.mysql_user:
+      login_unix_socket: "{{ db_unix_socket }}"
+      login_user: "{{ db_user }}"
+      login_password: "{{ db_pass }}"
+
+  vars:
+    debug: true
+    hostname: db.local
+    root_password: CHANGE_ME
+    users:
+    - student
+    group: users
+    wp_db_name: wordpress
+    wp_db_user: wordpress
+    db_host: localhost
+    db_port: 3306
+    db_unix_socket: /var/lib/mysql/mysql.sock
+    db_name: mysql
+    db_user: root
+    db_pass: CHANGE_ME
+    db_auth_plugin: mysql_native_password
+
+  # roles:
+  # - name: devsec.hardening.mysql_hardening
+  #   # scm: git
+  #   # src: https://github.com/dev-sec/ansible-collection-hardening/tree/master/roles/mysql_hardening
+  #   # version: master
+  #   vars:
+  #     mysql_daemon_enabled: true
+  #     mysql_hardening_enabled: true
+  #     mysql_hardening_restart_mysql: true
+  #     mysql_hardening_skip_grant_tables: false
+  #     mysql_remove_anonymous_users: true
+  #     mysql_remove_remote_root: false
+  #     mysql_remove_test_database: true
+  #     mysql_root_password: "{{ db_pass }}"
+
+  tasks:
+
+  - name: Configure system
+    tags:
+    - system
+    block:
+
+    - name: Set a hostname
+      ansible.builtin.hostname:
+        name: "{{ hostname }}"
+        use: systemd
+
+    - name: Set timezone
+      community.general.timezone:
+        name: America/New_York
+
+    # - name: Set keyboard layout
+
+    # - name: Set locale
+    #   community.general.locale_gen:
+    #     name: en_US.UTF-8
+    #     state: present
+
+  - name: Configure users
+    tags:
+    - users
+    block:
+
+    - name: Set root password
+      ansible.builtin.user:
+        name: root
+        comment: root
+        # password: "{{ root_password | password_hash('sha512') }}"
+        password: "$6$CHANGE_ME$CHANGE_ME"
+        password_lock: false
+        update_password: always
+
+    - name: Create users
+      ansible.builtin.user:
+        name: "{{ item }}"
+        comment: "{{ item }}"
+        group: "{{ group }}"
+        groups: "{{ group }},wheel"
+        append: yes
+        shell: /bin/bash
+        system: false
+        state: present
+        # password: "{{ item | password_hash('sha512')  }}"
+        password: "CHANGE_ME"
+        expires: -1
+        password_lock: false
+        update_password: always
+        home: "/home/{{ item }}"
+        create_home: yes
+        generate_ssh_key: yes
+        ssh_key_comment: "{{ item }}@{{ hostname }}"
+        ssh_key_bits: 2048
+        ssh_key_file: .ssh/id_rsa
+      loop: "{{ users }}"
+
+    - name: Remove groups
+      ansible.builtin.group:
+        name: "{{ item }}"
+        state: absent
+      loop: "{{ users }}"
+
+    - name: Fix HOME permissions
+      ansible.builtin.shell:
+        cmd: "chown -cR {{ item }}:{{ group }} ~{{ item }}"
+      loop: "{{ users }}"
+
+  - name: Configure packages
+    tags:
+    - packages
+    block:
+
+    - name: Install packages
+      ansible.builtin.dnf:
+        state: present
+        name:
+        - open-vm-tools
+        - cloud-init
+        - avahi
+        - avahi-tools
+        - mariadb-server
+        - memcached
+        - redis
+        - epel-release
+
+    - name: Remove packages
+      ansible.builtin.dnf:
+        state: absent
+        name:
+        - plymouth
+        - gnome-initial-setup
+
+    - name: Update dnf cache
+      ansible.builtin.dnf:
+        update_cache: yes
+        cacheonly: no
+
+    - name: Install packages
+      ansible.builtin.dnf:
+        state: present
+        name:
+        - ansible
+        - nss-mdns
+        - wget
+        - curl
+        - beep
+        - python3-mysqlclient
+
+  - name: Configure services
+    tags:
+    - services
+    block:
+
+    - name: Enable services
+      ansible.builtin.service:
+        state: started
+        enabled: yes
+        name: "{{ item }}"
+      loop:
+      - cloud-config
+      - cloud-init-local
+      - cloud-init
+      - cloud-final
+      - rc-local
+      - avahi-daemon
+      - sshd
+      - mariadb
+      - memcached
+      - redis
+
+  - name: Configure SELinux
+    tags:
+    - selinux
+    block:
+
+    - name: Set SELinux policy
+      ansible.posix.selinux:
+        state: enforcing
+        policy: targeted
+
+    - name: Set SELinux booleans
+      ansible.posix.seboolean:
+        name: "{{ item.name }}"
+        state: "{{ item.state }}"
+        persistent: yes
+      loop:
+      - name: mysql_connect_any
+        state: on
+      - name: mysql_connect_http
+        state: off
+      - name: selinuxuser_mysql_connect_enabled
+        state: on
+      - name: selinuxuser_ping
+        state: on
+      loop_control:
+        label: "{{ item.name }}"
+
+  - name: Configure FirewallD
+    block:
+
+    - name: Enable services
+      ansible.posix.firewalld:
+        zone: public
+        state: enabled
+        permanent: true
+        service: "{{ item }}"
+      loop:
+      - mdns
+      - ssh
+      - mysql
+      - memcache
+      - redis
+
+    - name: Reload FirewallD
+      ansible.builtin.command:
+        cmd: firewall-cmd --reload
+
+  - name: Configure database
+    tags:
+    - database
+    block:
+
+    - name: Check database info
+      community.mysql.mysql_info:
+      become: true
+
+    - name: Remove anonymous user accounts
+      community.mysql.mysql_user:
+        name: ''
+        host: localhost
+        state: absent
+
+    - name: Remove anonymous user accounts
+      community.mysql.mysql_user:
+        name: ''
+        host_all: true
+        state: absent
+
+    - name: Set database 'root' password
+      community.mysql.mysql_user:
+        name: "{{ db_user }}"
+        host: localhost
+        password: "{{ db_pass }}"
+        encrypted: false
+        plugin: "{{ db_auth_plugin }}"
+        state: present
+
+    - name: Create database user
+      block:
+
+      - name: Create database user
+        community.mysql.mysql_user:
+          name: "{{ item }}"
+          host: '%'
+          password: "{{ item }}"
+          encrypted: false
+          plugin: "{{ db_auth_plugin }}"
+          priv: "'{{ item }}.*:ALL'"
+          tls_requires: null
+          state: present
+        loop:
+        - "{{ wp_db_user }}"
+
+      rescue:
+
+      - name: Create database user
+        community.mysql.mysql_query:
+          query: "GRANT ALL PRIVILEGES ON {{ item }}.* TO '{{ item }}'@'%' IDENTIFIED BY '{{ item }}'"
+        loop:
+        - "{{ wp_db_user }}"
+
+    - name: Create database
+      community.mysql.mysql_db:
+        name: "{{ item }}"
+        encoding: utf8
+        collation: utf8_general_ci
+        state: present
+      loop:
+      - "{{ wp_db_name }}"
+
+    - name: FLUSH PRIVILEGES
+      community.mysql.mysql_query:
+        query: FLUSH PRIVILEGES
+...
