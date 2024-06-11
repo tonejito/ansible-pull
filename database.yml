@@ -33,7 +33,7 @@
 
   vars:
     debug: true
-    hostname: database.local
+    hostname: db.local
     root_password: centos
     users:
     - student
