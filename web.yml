@@ -52,7 +52,7 @@
     wp_db_name: wordpress
     wp_db_user: wordpress
     wp_db_pass: wordpress
-    db_host: database.local
+    db_host: db.local
     db_port: 3306
     db_unix_socket: /var/lib/mysql/mysql.sock
     db_name: "{{ wp_db_name }}"
