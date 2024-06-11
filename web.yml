@@ -31,7 +31,7 @@
 
   vars:
     debug: true
-    hostname: server.local
+    hostname: web.local
     root_password: centos
     users:
     - student
